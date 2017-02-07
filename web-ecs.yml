@@ -1,26 +1,30 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Parameters:
+  NetworkStackName:
+    Description: Name of an active CloudFormation stack that contains the networking
+      resources, such as the subnet and security group, that will be used in this
+      stack.
+    Type: String
+    MinLength: 1
+    MaxLength: 255
+    AllowedPattern: "^[a-zA-Z][-a-zA-Z0-9]*$"
+    Default: lrepolho-ecs-vpc
   KeyName:
     Type: AWS::EC2::KeyPair::KeyName
     Description: Name of an existing EC2 KeyPair to enable SSH access to the ECS instances.
-  VpcId:
-    Type: AWS::EC2::VPC::Id
-    Description: Select a VPC that allows instances access to the Internet.
-  SubnetID:
-    Type: List<AWS::EC2::Subnet::Id>
-    Description: Select at two subnets in your selected VPC.
+    Default: leandro.repolho
   DesiredCapacity:
     Type: Number
-    Default: '1'
+    Default: '2'
     Description: Number of instances to launch in your ECS cluster.
   MaxSize:
     Type: Number
-    Default: '1'
+    Default: '2'
     Description: Maximum number of instances that can be launched in your ECS cluster.
   InstanceType:
     Description: EC2 instance type
     Type: String
-    Default: t2.micro
+    Default: m3.medium
     AllowedValues: [t2.micro, t2.small, t2.medium, t2.large, m3.medium, m3.large,
       m3.xlarge, m3.2xlarge, m4.large, m4.xlarge, m4.2xlarge, m4.4xlarge, m4.10xlarge,
       c4.large, c4.xlarge, c4.2xlarge, c4.4xlarge, c4.8xlarge, c3.large, c3.xlarge,
@@ -54,7 +58,11 @@ Resources:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: ECS Security Group
-      VpcId: !Ref 'VpcId'
+      VpcId:
+        "Fn::ImportValue":
+            "Fn::Sub":
+              '${NetworkStackName}-VPC'
+      # !ImportValue !Sub '${NetworkStackName}-VPC'
   EcsSecurityGroupHTTPinbound:
     Type: AWS::EC2::SecurityGroupIngress
     Properties:
@@ -89,10 +97,10 @@ Resources:
     Properties:
       Family: !Join ['', [!Ref 'AWS::StackName', -ecs-demo-app]]
       ContainerDefinitions:
-      - Name: simple-app
+      - Name: simple-app2
         Cpu: '10'
         Essential: 'true'
-        Image: httpd:2.4
+        Image: leandrorepolho/monitor
         Memory: '300'
         LogConfiguration:
           LogDriver: awslogs
@@ -100,43 +108,23 @@ Resources:
             awslogs-group: !Ref 'CloudwatchLogsGroup'
             awslogs-region: !Ref 'AWS::Region'
             awslogs-stream-prefix: ecs-demo-app
-        MountPoints:
-        - ContainerPath: /usr/local/apache2/htdocs
-          SourceVolume: my-vol
         PortMappings:
         - ContainerPort: 80
-      - Name: busybox
-        Cpu: 10
-        Command: ['/bin/sh -c "while true; do echo ''<html> <head> <title>Amazon ECS
-            Sample App</title> <style>body {margin-top: 40px; background-color: #333;}
-            </style> </head><body> <div style=color:white;text-align:center> <h1>Amazon
-            ECS Sample App</h1> <h2>Congratulations!</h2> <p>Your application is now
-            running on a container in Amazon ECS.</p>'' > top; /bin/date > date ;
-            echo ''</div></body></html>'' > bottom; cat top date bottom > /usr/local/apache2/htdocs/index.html
-            ; sleep 1; done"']
-        EntryPoint: [sh, -c]
-        Essential: false
-        Image: busybox
-        Memory: 200
-        LogConfiguration:
-          LogDriver: awslogs
-          Options:
-            awslogs-group: !Ref 'CloudwatchLogsGroup'
-            awslogs-region: !Ref 'AWS::Region'
-            awslogs-stream-prefix: ecs-demo-app
-        VolumesFrom:
-        - SourceContainer: simple-app
-      Volumes:
-      - Name: my-vol
-  ECSALB:
+  ECSALB2:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
-      Name: ECSALB
+      Name: ECSALB2
       Scheme: internet-facing
       LoadBalancerAttributes:
       - Key: idle_timeout.timeout_seconds
         Value: '30'
-      Subnets: !Ref 'SubnetID'
+      Subnets:
+        - 'Fn::ImportValue':
+            'Fn::Sub':
+              '${NetworkStackName}-SubnetBPublic'
+        - 'Fn::ImportValue':
+            'Fn::Sub':
+              '${NetworkStackName}-SubnetAPublic'
       SecurityGroups: [!Ref 'EcsSecurityGroup']
   ALBListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
@@ -144,8 +132,8 @@ Resources:
     Properties:
       DefaultActions:
       - Type: forward
-        TargetGroupArn: !Ref 'ECSTG'
-      LoadBalancerArn: !Ref 'ECSALB'
+        TargetGroupArn: !Ref 'ECSTG2'
+      LoadBalancerArn: !Ref 'ECSALB2'
       Port: '80'
       Protocol: HTTP
   ECSALBListenerRule:
@@ -154,30 +142,36 @@ Resources:
     Properties:
       Actions:
       - Type: forward
-        TargetGroupArn: !Ref 'ECSTG'
+        TargetGroupArn: !Ref 'ECSTG2'
       Conditions:
       - Field: path-pattern
         Values: [/]
       ListenerArn: !Ref 'ALBListener'
       Priority: 1
-  ECSTG:
+  ECSTG2:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
-    DependsOn: ECSALB
+    DependsOn: ECSALB2
     Properties:
       HealthCheckIntervalSeconds: 10
       HealthCheckPath: /
       HealthCheckProtocol: HTTP
       HealthCheckTimeoutSeconds: 5
       HealthyThresholdCount: 2
-      Name: ECSTG
+      Name: ECSTG2
       Port: 80
       Protocol: HTTP
       UnhealthyThresholdCount: 2
-      VpcId: !Ref 'VpcId'
+      VpcId:
+        "Fn::ImportValue":
+          "Fn::Sub":
+            '${NetworkStackName}-VPC'
   ECSAutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
-      VPCZoneIdentifier: !Ref 'SubnetID'
+      VPCZoneIdentifier:
+        - 'Fn::ImportValue':
+            'Fn::Sub':
+              '${NetworkStackName}-SubnetsPublic'
       LaunchConfigurationName: !Ref 'ContainerInstances'
       MinSize: '1'
       MaxSize: !Ref 'MaxSize'
@@ -209,9 +203,9 @@ Resources:
       Cluster: !Ref 'ECSCluster'
       DesiredCount: '1'
       LoadBalancers:
-      - ContainerName: simple-app
+      - ContainerName: simple-app2
         ContainerPort: '80'
-        TargetGroupArn: !Ref 'ECSTG'
+        TargetGroupArn: !Ref 'ECSTG2'
       Role: !Ref 'ECSServiceRole'
       TaskDefinition: !Ref 'taskdefinition'
   ECSServiceRole:
@@ -267,7 +261,7 @@ Resources:
       AlarmActions: [!Ref 'ServiceScalingPolicy']
       Namespace: AWS/ApplicationELB
       Dimensions:
-      - Name: ECSService
+      - Name: ECSService2
         Value: !Ref 'service'
       ComparisonOperator: GreaterThanThreshold
       MetricName: HTTPCode_ELB_5XX_Count
@@ -318,8 +312,8 @@ Outputs:
     Value: !Ref 'service'
   ecscluster:
     Value: !Ref 'ECSCluster'
-  ECSALB:
+  ECSALB2:
     Description: Your ALB DNS URL
-    Value: !Join ['', [!GetAtt [ECSALB, DNSName]]]
+    Value: !Join ['', [!GetAtt [ECSALB2, DNSName]]]
   taskdef:
     Value: !Ref 'taskdefinition'
